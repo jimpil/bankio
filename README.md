@@ -1,6 +1,6 @@
-# bank
+# bankio
 
-A Clojure library designed to ... well, that part is up to you.
+Idiomatic Clojure leveraging STM for modelling a bank.
 
 ## Usage
 
