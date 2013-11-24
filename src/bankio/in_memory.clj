@@ -119,7 +119,7 @@
       (try  (transfer1 amount from to) 
       (catch IllegalStateException e
         (send-off denied-log write {:account @from :amount amount})
-        (send-off error write "[DENIED-OVERDRAFT]:" @from ":>" amount)))))) 
+        (send-off errors write "[DENIED-OVERDRAFT]:" @from ":>" amount)))))) 
 ;---------------------------------------------------------            
 (let [dummy (atom [(ref {:id "0001" :curr-balance 56 :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}}) 
                    (ref {:id "0002" :curr-balance 89 :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}})
@@ -198,7 +198,7 @@
    (doseq [[id acc] (partition 2 ids-accs)]
     (try (commute bank new-account id acc)
     (catch IllegalStateException e 
-      (send-off error write "[DENIED-OPENING]:" acc ":>" id)))) @bank))
+      (send-off errors write "[DENIED-OPENING]:" acc ":>" id)))) @bank))
      
 (defn close-accounts!
 "Entry point for closing accounts. 
@@ -209,7 +209,7 @@
   (doseq [id ids]
     (try (alter bank delete-account id true)
     (catch IllegalStateException e 
-     (send-off error write "[DENIED-CLOSING]:" @(get bank id))))) @bank))
+     (send-off errors write "[DENIED-CLOSING]:" @(get bank id))))) @bank))
      
 (defn total 
  "Sum all accounts. It expects the bank map - not the ref."
