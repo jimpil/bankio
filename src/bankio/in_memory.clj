@@ -1,12 +1,14 @@
-(ns bankio.core
+(ns bankio.in_memory
  (:require [clojure.test :refer [with-test is]]))
 ;------------------->Rudimemtary-logging-facilities<---------------------------------
 
-;featured in the book "Clojure Programming"
+;adopted from the book "Clojure Programming"
 
-(def console      (agent *out*)) 
+(def console  (agent *out*))
+(def errors   (agent *err*))
 (def accounts-log (agent (clojure.java.io/writer "logs/accounts.log" :append true)))
-(def bank-log     (agent (clojure.java.io/writer "logs/bank.log"     :append true))) 
+(def bank-log     (agent (clojure.java.io/writer "logs/bank.log"     :append true)))
+(def denied-log   (agent (clojure.java.io/writer "logs/denied.log"   :append true)))  
 
 (defn write [^java.io.Writer w & content]
  (doseq [x (interpose " " content)]
@@ -35,11 +37,15 @@
                                       :overdraft {:limit   OVERDRAFT_LIMIT
                                                   :penalty OVERDRAFT_PENALTY})))) ))) 
                                                      
-(defn- key-generator []
-  (let [i (atom 0)]
-    (fn [] (-> i (swap! inc) str))))
- 
-(def generate-key "thread-safe key-generator" (key-generator))  
+(defn- key-generator 
+([seed]
+ (let [i (atom seed)]
+  (fn [] (-> i (swap! inc) str))))
+([] 
+ (key-generator 0)))    
+
+; (repeatedly 10 generate-key) => ("1" "2" "3" "4" "5" "6" "7" "8" "9" "10") 
+(defonce generate-key (key-generator)) ;;thread-safe unique-key generator 
                                      
 (def bank1 ;;5 boys with ids 1-5
 (logged-ref (zipmap (repeatedly 5 generate-key)
@@ -50,7 +56,7 @@
                       {:name "Pierre" :curr-balance STARTING_AMOUNT :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}}
                       {:name "Jim"    :curr-balance STARTING_AMOUNT :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}}]
                 (repeat accounts-log)))
-  console bank-log ))
+   bank-log ))
                                                             
 (def bank2 ;;5 girls with ids 6-10
 (logged-ref (zipmap (repeatedly 5 generate-key) 
@@ -60,7 +66,7 @@
                       {:name "Sophia" :curr-balance STARTING_AMOUNT   :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}}
                       {:name "Lora"   :curr-balance STARTING_AMOUNT   :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}}
                       {:name "Danielle" :curr-balance STARTING_AMOUNT :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}}]))
-    console bank-log )) 
+    bank-log )) 
 
 (defn credit "A low-level crediting function. Nothing to do with refs." 
  [account amount]
@@ -111,9 +117,9 @@
   (dosync
     (doseq [[amount from to] (partition 3 amount-from-to)]
       (try  (transfer1 amount from to) 
-      (catch IllegalStateException e 
-        (binding [*out* *err*] 
-          (println "[DENIED-OVERDRAFT]:" @from "-->" amount))))))) 
+      (catch IllegalStateException e
+        (send-off denied-log write {:account @from :amount amount})
+        (send-off error write "[DENIED-OVERDRAFT]:" @from ":>" amount)))))) 
 ;---------------------------------------------------------            
 (let [dummy (atom [(ref {:id "0001" :curr-balance 56 :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}}) 
                    (ref {:id "0002" :curr-balance 89 :overdraft {:penalty OVERDRAFT_PENALTY :limit OVERDRAFT_LIMIT}})
@@ -174,10 +180,13 @@
     
 (defn- delete-account 
 "Returns a new bank with these id deleted or throws if the balance is not zero. Does not affect the original bank." 
-[bank id]
- (if (->> id (get bank) ensure :curr-balance zero?) ;;delete an account only if its balance is zero
+([bank id protect-ref?]
+(let [deref-fn (if protect-ref? ensure deref)] 
+ (if (->> id (get bank) deref-fn :curr-balance zero?) ;;delete an account only if its balance is zero
    (dissoc bank id)
-   (throw (IllegalStateException. "NON-ZERO balance!"))))                                                     
+   (throw (IllegalStateException. "Non-zero balance!")))))
+([bank id]
+  (delete-account bank id false)) )                                                        
        
 (defn open-accounts! 
 "Entry point for opening accounts. 
@@ -187,7 +196,9 @@
  (assert (zero? (rem (count ids-accs) 2)) "Need mulitples of 2 [id account-map]")
   (dosync
    (doseq [[id acc] (partition 2 ids-accs)]
-     (commute bank new-account id acc)) @bank))
+    (try (commute bank new-account id acc)
+    (catch IllegalStateException e 
+      (send-off error write "[DENIED-OPENING]:" acc ":>" id)))) @bank))
      
 (defn close-accounts!
 "Entry point for closing accounts. 
@@ -195,9 +206,10 @@
  Returns the in-transaction value of the bank." 
 [bank & ids]
  (dosync  
-  (doseq [id ids]  
-    ;(ensure (get @bank id)) ;;prevent modifications on the account we are deleting
-    (alter bank delete-account id)) @bank))
+  (doseq [id ids]
+    (try (alter bank delete-account id true)
+    (catch IllegalStateException e 
+     (send-off error write "[DENIED-CLOSING]:" @(get bank id))))) @bank))
      
 (defn total 
  "Sum all accounts. It expects the bank map - not the ref."
@@ -209,7 +221,7 @@
 ([bank nthreads sleep-time]
  (dotimes [i nthreads]
    (when (zero? (rem i 10))
-   (future (close-accounts! bank (str (/ i 5))))
+   (future (close-accounts! bank (str (/ i 2))))
    (let [k1 (generate-key)
          k2 (generate-key)] 
      (open-accounts! bank k1 {:name (str "BRAND-NEW" k1) :curr-balance STARTING_AMOUNT 
